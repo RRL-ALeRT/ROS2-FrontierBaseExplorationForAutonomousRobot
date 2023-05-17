@@ -1,0 +1,49 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/skpawar1305/ros2_ws/install/hector_geotiff/include/**",
+        "/home/skpawar1305/ros2_ws/install/world_info_msgs/include/**",
+        "/home/skpawar1305/ros2_ws/install/webots_spot_msgs/include/**",
+        "/home/skpawar1305/ros2_ws/install/spot_cpp_ros2/include/**",
+        "/home/skpawar1305/ros2_ws/install/multirobot_map_merge/include/**",
+        "/home/skpawar1305/ros2_ws/install/image_meta_msgs_ros2/include/**",
+        "/home/skpawar1305/ros2_ws/install/hector_nav_msgs/include/**",
+        "/home/skpawar1305/ros2_ws/install/gpp_action_examples_interface/include/**",
+        "/home/skpawar1305/ros2_ws/install/frontier_interfaces/include/**",
+        "/home/skpawar1305/ros2_ws/install/flir_spinnaker_common/include/**",
+        "/home/skpawar1305/ros2_ws/install/explorer_interfaces/include/**",
+        "/home/skpawar1305/ros2_ws/install/explore_lite/include/**",
+        "/home/skpawar1305/ros2_ws/install/camera_control_msgs_ros2/include/**",
+        "/home/skpawar1305/spot_ws/install/hector_geotiff/include/**",
+        "/home/skpawar1305/spot_ws/install/world_info_msgs/include/**",
+        "/home/skpawar1305/spot_ws/install/spot_msgs/include/**",
+        "/home/skpawar1305/spot_ws/install/realsense2_camera/include/**",
+        "/home/skpawar1305/spot_ws/install/realsense2_camera_msgs/include/**",
+        "/home/skpawar1305/spot_ws/install/hector_nav_msgs/include/**",
+        "/home/skpawar1305/spot_ws/install/apriltag_msgs/include/**",
+        "/opt/ros/humble/include/**",
+        "/home/skpawar1305/ros2_ws/src/flir_a320_ros2/include/**",
+        "/home/skpawar1305/ros2_ws/src/flir_spinnaker_common/include/**",
+        "/home/skpawar1305/ros2_ws/src/flir_spinnaker_ros2/include/**",
+        "/home/skpawar1305/ros2_ws/src/frontier_exploration/frontier_exploration/include/**",
+        "/home/skpawar1305/ros2_ws/src/m-explore-ros2/explore/include/**",
+        "/home/skpawar1305/ros2_ws/src/m-explore-ros2/map_merge/include/**",
+        "/home/skpawar1305/ros2_ws/src/rosparam_shortcuts/include/**",
+        "/home/skpawar1305/ros2_ws/src/rviz_visual_tools/include/**",
+        "/home/skpawar1305/ros2_ws/src/spot_cpp_ros2/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}

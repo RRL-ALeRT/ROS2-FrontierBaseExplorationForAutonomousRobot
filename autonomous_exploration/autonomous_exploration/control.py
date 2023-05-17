@@ -1,15 +1,16 @@
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid , Odometry
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Pose
 from sensor_msgs.msg import LaserScan
 import numpy as np
 import heapq , math , random , yaml
 import scipy.interpolate as si
 import sys , threading , time
+import tf2_ros
+from visualization_msgs.msg import Marker
 
-
-with open("src/autonomous_exploration/config/params.yaml", 'r') as file:
+with open("src/ROS2-FrontierBaseExplorationForAutonomousRobot/autonomous_exploration/config/params.yaml", 'r') as file:
     params = yaml.load(file, Loader=yaml.FullLoader)
 
 lookahead_distance = params["lookahead_distance"]
@@ -19,6 +20,7 @@ target_error = params["target_error"]
 robot_r = params["robot_r"]
 
 pathGlobal = 0
+
 
 def euler_from_quaternion(x,y,z,w):
     t0 = +2.0 * (w * x + y * z)
@@ -33,8 +35,10 @@ def euler_from_quaternion(x,y,z,w):
     yaw_z = math.atan2(t3, t4)
     return yaw_z
 
+
 def heuristic(a, b):
     return np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
+
 
 def astar(array, start, goal):
     neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
@@ -94,6 +98,7 @@ def astar(array, start, goal):
             return data
     return False
 
+
 def bspline_planning(array, sn):
     try:
         array = np.array(array)
@@ -119,6 +124,7 @@ def bspline_planning(array, sn):
     except:
         path = array
     return path
+
 
 def pure_pursuit(current_x, current_y, current_heading, path, index):
     global lookahead_distance
@@ -149,19 +155,28 @@ def pure_pursuit(current_x, current_y, current_heading, path, index):
         v = 0.0
     return v,desired_steering_angle,index
 
+
 def frontierB(matrix):
+    frontier_points = []  # List to store frontier points
+
     for i in range(len(matrix)):
         for j in range(len(matrix[i])):
             if matrix[i][j] == 0.0:
-                if i > 0 and matrix[i-1][j] < 0:
+                if i > 0 and matrix[i - 1][j] < 0:
                     matrix[i][j] = 2
-                elif i < len(matrix)-1 and matrix[i+1][j] < 0:
+                    frontier_points.append((i, j))  # Append frontier point coordinates to the list
+                elif i < len(matrix) - 1 and matrix[i + 1][j] < 0:
                     matrix[i][j] = 2
-                elif j > 0 and matrix[i][j-1] < 0:
+                    frontier_points.append((i, j))
+                elif j > 0 and matrix[i][j - 1] < 0:
                     matrix[i][j] = 2
-                elif j < len(matrix[i])-1 and matrix[i][j+1] < 0:
+                    frontier_points.append((i, j))
+                elif j < len(matrix[i]) - 1 and matrix[i][j + 1] < 0:
                     matrix[i][j] = 2
-    return matrix
+                    frontier_points.append((i, j))
+
+    return matrix, frontier_points
+
 
 def assign_groups(matrix):
     group = 1
@@ -186,16 +201,18 @@ def dfs(matrix, i, j, group, groups):
     dfs(matrix, i - 1, j, group, groups)
     dfs(matrix, i, j + 1, group, groups)
     dfs(matrix, i, j - 1, group, groups)
-    dfs(matrix, i + 1, j + 1, group, groups) # sağ alt çapraz
-    dfs(matrix, i - 1, j - 1, group, groups) # sol üst çapraz
-    dfs(matrix, i - 1, j + 1, group, groups) # sağ üst çapraz
-    dfs(matrix, i + 1, j - 1, group, groups) # sol alt çapraz
+    dfs(matrix, i + 1, j + 1, group, groups) # lower right cross
+    dfs(matrix, i - 1, j - 1, group, groups) # top left cross
+    dfs(matrix, i - 1, j + 1, group, groups) # top right cross
+    dfs(matrix, i + 1, j - 1, group, groups) # lower left cross
     return group + 1
+
 
 def fGroups(groups):
     sorted_groups = sorted(groups.items(), key=lambda x: len(x[1]), reverse=True)
     top_five_groups = [g for g in sorted_groups[:5] if len(g[1]) > 2]    
     return top_five_groups
+
 
 def calculate_centroid(x_coords, y_coords):
     n = len(x_coords)
@@ -206,7 +223,7 @@ def calculate_centroid(x_coords, y_coords):
     centroid = (int(mean_x), int(mean_y))
     return centroid
 
-#Bu fonksiyon en buyuk 5 gruptan target_error*2 uzaklıktan daha uzak olan ve robota en yakın olanı seçer.
+#This function selects the one that is farther than target_error*2 from the top 5 groups and closest to the robot.
 """
 def findClosestGroup(matrix,groups, current,resolution,originX,originY):
     targetP = None
@@ -226,7 +243,7 @@ def findClosestGroup(matrix,groups, current,resolution,originX,originY):
                 min_index = i
     if min_index != -1:
         targetP = paths[min_index]
-    else: #gruplar target_error*2 uzaklıktan daha yakınsa random bir noktayı hedef olarak seçer. Bu robotun bazı durumlardan kurtulmasını sağlar.
+    else: #selects a random point as a target if groups are closer than target_error*2 distance. This allows the robot to recover from certain situations.
         index = random.randint(0,len(groups)-1)
         target = groups[index][1]
         target = target[random.randint(0,len(target)-1)]
@@ -258,7 +275,7 @@ def findClosestGroup(matrix,groups, current,resolution,originX,originY):
                 max_score = i
     if max_score != -1:
         targetP = paths[max_score]
-    else: #gruplar target_error*2 uzaklıktan daha yakınsa random bir noktayı hedef olarak seçer. Bu robotun bazı durumlardan kurtulmasını sağlar.
+    else: #selects a random point as a target if groups are closer than target_error*2 distance. This allows the robot to recover from certain situations.
         index = random.randint(0,len(groups)-1)
         target = groups[index][1]
         target = target[random.randint(0,len(target)-1)]
@@ -290,25 +307,6 @@ def costmap(data,width,height,resolution):
     data = data*resolution
     return data
 
-def exploration(data,width,height,resolution,column,row,originX,originY):
-        global pathGlobal #Global degisken
-        data = costmap(data,width,height,resolution) #Engelleri genislet
-        data[row][column] = 0 #Robot Anlık Konum
-        data[data > 5] = 1 # 0 olanlar gidilebilir yer, 100 olanlar kesin engel
-        data = frontierB(data) #Sınır noktaları bul
-        data,groups = assign_groups(data) #Sınır noktaları gruplandır
-        groups = fGroups(groups) #Grupları küçükten büyüğe sırala. En buyuk 5 grubu al
-        if len(groups) == 0: #Grup yoksa kesif tamamlandı
-            path = -1
-        else: #Grup varsa en yakın grubu bul
-            data[data < 0] = 1 #-0.05 olanlar bilinmeyen yer. Gidilemez olarak isaretle. 0 = gidilebilir, 1 = gidilemez.
-            path = findClosestGroup(data,groups,(row,column),resolution,originX,originY) #En yakın grubu bul
-            if path != None: #Yol varsa BSpline ile düzelt
-                path = bspline_planning(path,len(path)*5)
-            else:
-                path = -1
-        pathGlobal = path
-        return
 
 def localControl(scan):
     v = None
@@ -332,40 +330,77 @@ class navigationControl(Node):
         super().__init__('Exploration')
         self.subscription = self.create_subscription(OccupancyGrid,'map',self.map_callback,10)
         self.subscription = self.create_subscription(Odometry,'odom',self.odom_callback,10)
-        self.subscription = self.create_subscription(LaserScan,'scan',self.scan_callback,10)
+
+        self.subscription = self.create_subscription(
+            LaserScan,
+            'scan',
+            self.scan_callback,
+            qos_profile=rclpy.qos.QoSProfile(
+                reliability=rclpy.qos.QoSReliabilityPolicy.BEST_EFFORT,
+                depth=5,
+                durability=rclpy.qos.QoSDurabilityPolicy.VOLATILE
+            )
+        )
+
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
-        print("[BILGI] KESİF MODU AKTİF")
+        
+        self.path_publisher = self.create_publisher(Marker, 'path_marker', 10)
+        self.frontier_publisher = self.create_publisher(Marker, 'frontier_marker', 10)
+
+        print("[INFO] DISCOVER MODE ACTIVE")
         self.kesif = True
-        threading.Thread(target=self.exp).start() #Kesif fonksiyonunu thread olarak calistirir.
+
+        # Initialize the transform buffer and listener
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        threading.Thread(target=self.exp).start() # Runs the excerpt function as a thread.
         
     def exp(self):
         twist = Twist()
         while True: #Sensor verileri gelene kadar bekle.
-            if not hasattr(self,'map_data') or not hasattr(self,'odom_data') or not hasattr(self,'scan_data'):
+            if not hasattr(self,'map_data') or not hasattr(self,'scan_data'):
                 time.sleep(0.1)
                 continue
+
+            try:
+                # Get the transform from "map" frame to "odom" frame
+                transform = self.tf_buffer.lookup_transform("odom", "base_link", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0))
+
+                # Extract the robot's position and orientation in the "map" frame
+                self.x = transform.transform.translation.x
+                self.y = transform.transform.translation.y
+                self.yaw = euler_from_quaternion(transform.transform.rotation.x,
+                                                 transform.transform.rotation.y,
+                                                 transform.transform.rotation.z,
+                                                 transform.transform.rotation.w)
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
+                # Log a warning if the transform cannot be obtained
+                self.get_logger().warn("Could not get transform from map to odom: {}".format(ex))
+                continue
+
             if self.kesif == True:
                 if isinstance(pathGlobal, int) and pathGlobal == 0:
                     column = int((self.x - self.originX)/self.resolution)
                     row = int((self.y- self.originY)/self.resolution)
-                    exploration(self.data,self.width,self.height,self.resolution,column,row,self.originX,self.originY)
+                    self.exploration(self.data,self.width,self.height,self.resolution,column,row,self.originX,self.originY)
                     self.path = pathGlobal
                 else:
                     self.path = pathGlobal
                 if isinstance(self.path, int) and self.path == -1:
-                    print("[BILGI] KESİF TAMAMLANDI")
+                    print("[INFO] EXPLORATION COMPLETED")
                     sys.exit()
                 self.c = int((self.path[-1][0] - self.originX)/self.resolution) 
                 self.r = int((self.path[-1][1] - self.originY)/self.resolution) 
                 self.kesif = False
                 self.i = 0
-                print("[BILGI] YENI HEDEF BELİRLENDI")
+                print("[INFO] NEW TARGET SET")
                 t = pathLength(self.path)/speed
-                t = t - 0.2 #x = v * t formülüne göre hesaplanan sureden 0.2 saniye cikarilir. t sure sonra kesif fonksiyonu calistirilir.
-                self.t = threading.Timer(t,self.target_callback) #Hedefe az bir sure kala kesif fonksiyonunu calistirir.
+                t = t - 0.2 #Subtract 0.2 seconds from the time calculated according to the formula x = v * t. After t time, the discovery function is executed.
+                self.t = threading.Timer(t,self.target_callback) # Runs the discovery function shortly before the target.
                 self.t.start()
-            
-            #Rota Takip Blok Baslangic
+
+            #Route Tracking Block Start
             else:
                 v , w = localControl(self.scan)
                 if v == None:
@@ -374,16 +409,16 @@ class navigationControl(Node):
                     v = 0.0
                     w = 0.0
                     self.kesif = True
-                    print("[BILGI] HEDEFE ULASILDI")
-                    self.t.join() #Thread bitene kadar bekle.
+                    print("[INFO] TARGET REACHED")
+                    self.t.join() #Wait until thread is finished.
                 twist.linear.x = v
                 twist.angular.z = w
                 self.publisher.publish(twist)
                 time.sleep(0.1)
-            #Rota Takip Blok Bitis
+            #Route Follow Block End
 
     def target_callback(self):
-        exploration(self.data,self.width,self.height,self.resolution,self.c,self.r,self.originX,self.originY)
+        self.exploration(self.data,self.width,self.height,self.resolution,self.c,self.r,self.originX,self.originY)
         
     def scan_callback(self,msg):
         self.scan_data = msg
@@ -405,6 +440,67 @@ class navigationControl(Node):
         self.yaw = euler_from_quaternion(msg.pose.pose.orientation.x,msg.pose.pose.orientation.y,
         msg.pose.pose.orientation.z,msg.pose.pose.orientation.w)
 
+    def exploration(self, data,width,height,resolution,column,row,originX,originY):
+        global pathGlobal
+        data = costmap(data,width,height,resolution) #Engelleri genislet
+        data[row][column] = 0 #Robot Instant Location
+        data[data > 5] = 1 # 0 is a place to go, 100 is a definite obstacle
+        data,frontier_points = frontierB(data) #Find boundary points
+        data,groups = assign_groups(data) #Group boundary points
+        groups = fGroups(groups) # Sort the groups from smallest to largest. Get the top 5 groups
+        if len(groups) == 0: #Discovery complete if there is no group
+            path = -1
+        else: #Find the closest group if there is a group
+            data[data < 0] = 1 #-0.05 ones unknown location. Mark as not allowed. 0 = can go, 1 = not go.
+            path = findClosestGroup(data,groups,(row,column),resolution,originX,originY) #Find the nearest group
+            if path != None: #Fix with BSpline if path exists
+                path = bspline_planning(path,len(path)*5)
+            else:
+                path = -1
+        pathGlobal = path
+
+        # Publish path marker
+        path_marker = Marker()
+        path_marker.header.frame_id = 'map'
+        path_marker.type = Marker.LINE_STRIP
+        path_marker.action = Marker.ADD
+        path_marker.scale.x = 0.1  # Line width
+        path_marker.color.a = 1.0  # Alpha
+        path_marker.color.r = 0.0  # Red
+        path_marker.color.g = 1.0  # Green
+        path_marker.color.b = 0.0  # Blue
+
+        # Add path points
+        for point in path:
+            pose = Pose()
+            pose.position.x = point[0]
+            pose.position.y = point[1]
+            path_marker.points.append(pose.position)
+
+        self.path_publisher.publish(path_marker)
+
+        # # Publish frontier marker
+        # frontier_marker = Marker()
+        # frontier_marker.header.frame_id = 'map'
+        # frontier_marker.type = Marker.POINTS
+        # frontier_marker.action = Marker.ADD
+        # frontier_marker.scale.x = 0.02  # Point size
+        # frontier_marker.scale.y = 0.02  # Point size
+        # frontier_marker.color.a = 1.0  # Alpha
+        # frontier_marker.color.r = 1.0  # Red
+        # frontier_marker.color.g = 0.0  # Green
+        # frontier_marker.color.b = 0.0  # Blue
+
+        # # Add frontier points
+        # for frontier_point in frontier_points:
+        #     pose = Pose()
+        #     pose.position.x = float(frontier_point[1]) * self.resolution + self.originX
+        #     pose.position.y = float(frontier_point[0]) * self.resolution + self.originY
+        #     frontier_marker.points.append(pose.position)
+
+        # self.frontier_publisher.publish(frontier_marker)
+
+        return
 
 def main(args=None):
     rclpy.init(args=args)
