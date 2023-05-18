@@ -1,14 +1,16 @@
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid , Odometry
+
+from nav_msgs.msg import OccupancyGrid, Odometry
 from geometry_msgs.msg import Twist, Pose
 from sensor_msgs.msg import LaserScan
+import tf2_ros
+from visualization_msgs.msg import Marker
+
 import numpy as np
 import heapq , math , random , yaml
 import scipy.interpolate as si
 import sys , threading , time
-import tf2_ros
-from visualization_msgs.msg import Marker
 
 with open("src/ROS2-FrontierBaseExplorationForAutonomousRobot/autonomous_exploration/config/params.yaml", 'r') as file:
     params = yaml.load(file, Loader=yaml.FullLoader)
@@ -41,44 +43,53 @@ def heuristic(a, b):
 
 
 def astar(array, start, goal):
-    neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+    neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
     close_set = set()
     came_from = {}
-    gscore = {start:0}
-    fscore = {start:heuristic(start, goal)}
+    gscore = {start: 0}
+    fscore = {start: heuristic(start, goal)}
     oheap = []
     heapq.heappush(oheap, (fscore[start], start))
+    open_set = {start}
+
     while oheap:
         current = heapq.heappop(oheap)[1]
+        
         if current == goal:
             data = []
             while current in came_from:
                 data.append(current)
                 current = came_from[current]
-            data = data + [start]
-            data = data[::-1]
+            data.append(start)
+            data.reverse()
             return data
+        
         close_set.add(current)
+        
+        if current in open_set:
+            open_set.remove(current)
+        
         for i, j in neighbors:
             neighbor = current[0] + i, current[1] + j
-            tentative_g_score = gscore[current] + heuristic(current, neighbor)
-            if 0 <= neighbor[0] < array.shape[0]:
-                if 0 <= neighbor[1] < array.shape[1]:                
-                    if array[neighbor[0]][neighbor[1]] == 1:
-                        continue
-                else:
-                    # array bound y walls
-                    continue
-            else:
-                # array bound x walls
+            
+            if neighbor[0] < 0 or neighbor[0] >= array.shape[0] or neighbor[1] < 0 or neighbor[1] >= array.shape[1]:
                 continue
+            
+            if array[neighbor[0]][neighbor[1]] == 1:
+                continue
+            
+            tentative_g_score = gscore[current] + heuristic(current, neighbor)
+            
             if neighbor in close_set and tentative_g_score >= gscore.get(neighbor, 0):
                 continue
-            if  tentative_g_score < gscore.get(neighbor, 0) or neighbor not in [i[1]for i in oheap]:
+            
+            if tentative_g_score < gscore.get(neighbor, 0) or neighbor not in open_set:
                 came_from[neighbor] = current
                 gscore[neighbor] = tentative_g_score
                 fscore[neighbor] = tentative_g_score + heuristic(neighbor, goal)
                 heapq.heappush(oheap, (fscore[neighbor], neighbor))
+                open_set.add(neighbor)
+    
     # If no path to goal was found, return closest path to goal
     if goal not in came_from:
         closest_node = None
@@ -93,9 +104,10 @@ def astar(array, start, goal):
             while closest_node in came_from:
                 data.append(closest_node)
                 closest_node = came_from[closest_node]
-            data = data + [start]
-            data = data[::-1]
+            data.append(start)
+            data.reverse()
             return data
+    
     return False
 
 
@@ -105,32 +117,31 @@ def bspline_planning(array, sn):
         x = array[:, 0]
         y = array[:, 1]
         N = 2
-        t = range(len(x))
+        t = np.arange(len(x))
         x_tup = si.splrep(t, x, k=N)
         y_tup = si.splrep(t, y, k=N)
 
         x_list = list(x_tup)
-        xl = x.tolist()
-        x_list[1] = xl + [0.0, 0.0, 0.0, 0.0]
+        x_list[1] = np.pad(x_list[1], (0, 4), mode='constant')
 
         y_list = list(y_tup)
-        yl = y.tolist()
-        y_list[1] = yl + [0.0, 0.0, 0.0, 0.0]
+        y_list[1] = np.pad(y_list[1], (0, 4), mode='constant')
 
         ipl_t = np.linspace(0.0, len(x) - 1, sn)
         rx = si.splev(ipl_t, x_list)
         ry = si.splev(ipl_t, y_list)
-        path = [(rx[i],ry[i]) for i in range(len(rx))]
-    except:
-        path = array
-    return path
 
+        path = list(zip(rx, ry))
+    except (TypeError, ValueError):
+        path = array.tolist()
+
+    return path
 
 def pure_pursuit(current_x, current_y, current_heading, path, index):
     global lookahead_distance
     closest_point = None
-    v = speed
-    for i in range(index,len(path)):
+    v = -speed  # Set the speed to a negative value to make the robot go in reverse
+    for i in range(index, len(path)):
         x = path[i][0]
         y = path[i][1]
         distance = math.hypot(current_x - x, current_y - y)
@@ -139,73 +150,68 @@ def pure_pursuit(current_x, current_y, current_heading, path, index):
             index = i
             break
     if closest_point is not None:
-        target_heading = math.atan2(closest_point[1] - current_y, closest_point[0] - current_x)
+        target_heading = math.atan2(current_y - closest_point[1], current_x - closest_point[0])  # Reverse the atan2 arguments
         desired_steering_angle = target_heading - current_heading
     else:
-        target_heading = math.atan2(path[-1][1] - current_y, path[-1][0] - current_x)
+        target_heading = math.atan2(current_y - path[-1][1], current_x - path[-1][0])  # Reverse the atan2 arguments
         desired_steering_angle = target_heading - current_heading
-        index = len(path)-1
+        index = len(path) - 1
     if desired_steering_angle > math.pi:
         desired_steering_angle -= 2 * math.pi
     elif desired_steering_angle < -math.pi:
         desired_steering_angle += 2 * math.pi
-    if desired_steering_angle > math.pi/6 or desired_steering_angle < -math.pi/6:
+    if desired_steering_angle > math.pi / 6 or desired_steering_angle < -math.pi / 6:
         sign = 1 if desired_steering_angle > 0 else -1
-        desired_steering_angle = sign * math.pi/4
+        desired_steering_angle = sign * math.pi / 4
         v = 0.0
-    return v,desired_steering_angle,index
+    return v, desired_steering_angle, index
 
 
 def frontierB(matrix):
-    frontier_points = []  # List to store frontier points
+    for i, row in enumerate(matrix):
+        for j, value in enumerate(row):
+            if value == 0.0:
+                if (i > 0 and matrix[i - 1][j] < 0) or \
+                   (i < len(matrix) - 1 and matrix[i + 1][j] < 0) or \
+                   (j > 0 and matrix[i][j - 1] < 0) or \
+                   (j < len(row) - 1 and matrix[i][j + 1] < 0):
+                    matrix[i][j] = 2
 
-    for i in range(len(matrix)):
-        for j in range(len(matrix[i])):
-            if matrix[i][j] == 0.0:
-                if i > 0 and matrix[i - 1][j] < 0:
-                    matrix[i][j] = 2
-                    frontier_points.append((i, j))  # Append frontier point coordinates to the list
-                elif i < len(matrix) - 1 and matrix[i + 1][j] < 0:
-                    matrix[i][j] = 2
-                    frontier_points.append((i, j))
-                elif j > 0 and matrix[i][j - 1] < 0:
-                    matrix[i][j] = 2
-                    frontier_points.append((i, j))
-                elif j < len(matrix[i]) - 1 and matrix[i][j + 1] < 0:
-                    matrix[i][j] = 2
-                    frontier_points.append((i, j))
-
-    return matrix, frontier_points
+    return matrix
 
 
 def assign_groups(matrix):
     group = 1
     groups = {}
+    visited = set()
+    stack = []
+
+    def dfs(matrix, i, j, group, groups):
+        stack.append((i, j))
+        while stack:
+            x, y = stack.pop()
+            if (x, y) in visited:
+                continue
+            visited.add((x, y))
+            if matrix[x][y] != 2:
+                continue
+            if group in groups:
+                groups[group].append((x, y))
+            else:
+                groups[group] = [(x, y)]
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (-1, 1), (1, -1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < len(matrix) and 0 <= ny < len(matrix[0]):
+                    stack.append((nx, ny))
+
+        return group + 1
+
     for i in range(len(matrix)):
         for j in range(len(matrix[0])):
-            if matrix[i][j] == 2:
+            if matrix[i][j] == 2 and (i, j) not in visited:
                 group = dfs(matrix, i, j, group, groups)
-    return matrix, groups
 
-def dfs(matrix, i, j, group, groups):
-    if i < 0 or i >= len(matrix) or j < 0 or j >= len(matrix[0]):
-        return group
-    if matrix[i][j] != 2:
-        return group
-    if group in groups:
-        groups[group].append((i, j))
-    else:
-        groups[group] = [(i, j)]
-    matrix[i][j] = 0
-    dfs(matrix, i + 1, j, group, groups)
-    dfs(matrix, i - 1, j, group, groups)
-    dfs(matrix, i, j + 1, group, groups)
-    dfs(matrix, i, j - 1, group, groups)
-    dfs(matrix, i + 1, j + 1, group, groups) # lower right cross
-    dfs(matrix, i - 1, j - 1, group, groups) # top left cross
-    dfs(matrix, i - 1, j + 1, group, groups) # top right cross
-    dfs(matrix, i + 1, j - 1, group, groups) # lower left cross
-    return group + 1
+    return matrix, groups
 
 
 def fGroups(groups):
@@ -215,73 +221,45 @@ def fGroups(groups):
 
 
 def calculate_centroid(x_coords, y_coords):
-    n = len(x_coords)
-    sum_x = sum(x_coords)
-    sum_y = sum(y_coords)
-    mean_x = sum_x / n
-    mean_y = sum_y / n
-    centroid = (int(mean_x), int(mean_y))
-    return centroid
+    return np.mean(x_coords, dtype=int), np.mean(y_coords, dtype=int)
+
 
 #This function selects the one that is farther than target_error*2 from the top 5 groups and closest to the robot.
-"""
-def findClosestGroup(matrix,groups, current,resolution,originX,originY):
+def findClosestGroup(matrix, groups, current, resolution, originX, originY):
     targetP = None
-    distances = []
-    paths = []
-    min_index = -1
-    for i in range(len(groups)):
-        middle = calculate_centroid([p[0] for p in groups[i][1]],[p[1] for p in groups[i][1]]) 
+    distances = np.zeros(len(groups))
+    paths = [None] * len(groups)
+    score = np.zeros(len(groups))
+    max_score = None  # max score index
+    num_groups = len(groups)
+    
+    for i, (_, points) in enumerate(groups):
+        middle = (np.mean([p[0] for p in points]), np.mean([p[1] for p in points]))
         path = astar(matrix, current, middle)
-        path = [(p[1]*resolution+originX,p[0]*resolution+originY) for p in path]
-        total_distance = pathLength(path)
-        distances.append(total_distance)
-        paths.append(path)
-    for i in range(len(distances)):
-        if distances[i] > target_error*3:
-            if min_index == -1 or distances[i] < distances[min_index]:
-                min_index = i
-    if min_index != -1:
-        targetP = paths[min_index]
-    else: #selects a random point as a target if groups are closer than target_error*2 distance. This allows the robot to recover from certain situations.
-        index = random.randint(0,len(groups)-1)
-        target = groups[index][1]
-        target = target[random.randint(0,len(target)-1)]
-        path = astar(matrix, current, target)
-        targetP = [(p[1]*resolution+originX,p[0]*resolution+originY) for p in path]
-    return targetP
-"""
-def findClosestGroup(matrix,groups, current,resolution,originX,originY):
-    targetP = None
-    distances = []
-    paths = []
-    score = []
-    max_score = -1 #max score index
-    for i in range(len(groups)):
-        middle = calculate_centroid([p[0] for p in groups[i][1]],[p[1] for p in groups[i][1]]) 
-        path = astar(matrix, current, middle)
-        path = [(p[1]*resolution+originX,p[0]*resolution+originY) for p in path]
-        total_distance = pathLength(path)
-        distances.append(total_distance)
-        paths.append(path)
-    for i in range(len(distances)):
-        if distances[i] == 0:
-            score.append(0)
-        else:
-            score.append(len(groups[i][1])/distances[i])
-    for i in range(len(distances)):
-        if distances[i] > target_error*3:
-            if max_score == -1 or score[i] > score[max_score]:
+        path = [(p[1] * resolution + originX, p[0] * resolution + originY) for p in path]
+        paths[i] = path
+        distances[i] = pathLength(path)
+    
+    for i in range(num_groups):
+        if distances[i] != 0:
+            score[i] = len(groups[i][1]) / distances[i]
+    
+    for i in range(num_groups):
+        if distances[i] > target_error * 3:
+            if max_score is None or score[i] > score[max_score]:
                 max_score = i
-    if max_score != -1:
+    
+    if max_score is not None:
         targetP = paths[max_score]
-    else: #selects a random point as a target if groups are closer than target_error*2 distance. This allows the robot to recover from certain situations.
-        index = random.randint(0,len(groups)-1)
+    else:  # selects a random point as a target if groups are closer than target_error*2 distance.
+        index = random.randint(0, num_groups - 1)
         target = groups[index][1]
-        target = target[random.randint(0,len(target)-1)]
+        target = target[random.randint(0, len(target) - 1)]
         path = astar(matrix, current, target)
-        targetP = [(p[1]*resolution+originX,p[0]*resolution+originY) for p in path]
+        targetP = [(p[1] * resolution + originX, p[0] * resolution + originY) for p in path]
+    
     return targetP
+
 
 def pathLength(path):
     for i in range(len(path)):
@@ -328,94 +306,99 @@ def localControl(scan):
 class navigationControl(Node):
     def __init__(self):
         super().__init__('Exploration')
-        self.subscription = self.create_subscription(OccupancyGrid,'map',self.map_callback,10)
-        self.subscription = self.create_subscription(Odometry,'odom',self.odom_callback,10)
+        self.subscription = self.create_subscription(OccupancyGrid,'map',self.map_callback,1)
+        self.subscription = self.create_subscription(Odometry,'odom',self.odom_callback,1)
 
         self.subscription = self.create_subscription(
             LaserScan,
-            'scan',
+            '/scan',
             self.scan_callback,
             qos_profile=rclpy.qos.QoSProfile(
                 reliability=rclpy.qos.QoSReliabilityPolicy.BEST_EFFORT,
-                depth=5,
+                depth=1,
                 durability=rclpy.qos.QoSDurabilityPolicy.VOLATILE
             )
         )
 
-        self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.publisher = self.create_publisher(Twist, 'cmd_vel', 1)
         
-        self.path_publisher = self.create_publisher(Marker, 'path_marker', 10)
-        self.frontier_publisher = self.create_publisher(Marker, 'frontier_marker', 10)
+        self.path_publisher = self.create_publisher(Marker, 'path_marker', 1)
+        self.frontier_publisher = self.create_publisher(Marker, 'frontier_marker', 1)
 
         print("[INFO] DISCOVER MODE ACTIVE")
-        self.kesif = True
+        self.discovery = True
 
         # Initialize the transform buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        threading.Thread(target=self.exp).start() # Runs the excerpt function as a thread.
+        self.create_timer(0.05, self.exp)
         
     def exp(self):
+        global pathGlobal
+
         twist = Twist()
-        while True: #Sensor verileri gelene kadar bekle.
-            if not hasattr(self,'map_data') or not hasattr(self,'scan_data'):
-                time.sleep(0.1)
-                continue
 
-            try:
-                # Get the transform from "map" frame to "odom" frame
-                transform = self.tf_buffer.lookup_transform("odom", "base_link", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0))
+        if not hasattr(self,'map_data'):
+            self.get_logger().warn("Could not get map data")
+            return
+        
+        if not hasattr(self,'scan_data'):
+            self.get_logger().warn("Could not get scan data")
+            return
 
-                # Extract the robot's position and orientation in the "map" frame
-                self.x = transform.transform.translation.x
-                self.y = transform.transform.translation.y
-                self.yaw = euler_from_quaternion(transform.transform.rotation.x,
-                                                 transform.transform.rotation.y,
-                                                 transform.transform.rotation.z,
-                                                 transform.transform.rotation.w)
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
-                # Log a warning if the transform cannot be obtained
-                self.get_logger().warn("Could not get transform from map to odom: {}".format(ex))
-                continue
+        try:
+            # Get the transform from "map" frame to "odom" frame
+            self.transform = self.tf_buffer.lookup_transform("odom", "base_link", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.5))
 
-            if self.kesif == True:
-                if isinstance(pathGlobal, int) and pathGlobal == 0:
-                    column = int((self.x - self.originX)/self.resolution)
-                    row = int((self.y- self.originY)/self.resolution)
-                    self.exploration(self.data,self.width,self.height,self.resolution,column,row,self.originX,self.originY)
-                    self.path = pathGlobal
-                else:
-                    self.path = pathGlobal
-                if isinstance(self.path, int) and self.path == -1:
-                    print("[INFO] EXPLORATION COMPLETED")
-                    sys.exit()
-                self.c = int((self.path[-1][0] - self.originX)/self.resolution) 
-                self.r = int((self.path[-1][1] - self.originY)/self.resolution) 
-                self.kesif = False
-                self.i = 0
-                print("[INFO] NEW TARGET SET")
-                t = pathLength(self.path)/speed
-                t = t - 0.2 #Subtract 0.2 seconds from the time calculated according to the formula x = v * t. After t time, the discovery function is executed.
-                self.t = threading.Timer(t,self.target_callback) # Runs the discovery function shortly before the target.
-                self.t.start()
+            # Extract the robot's position and orientation in the "map" frame
+            self.x = self.transform.transform.translation.x
+            self.y = self.transform.transform.translation.y
+            self.yaw = euler_from_quaternion(self.transform.transform.rotation.x,
+                                                self.transform.transform.rotation.y,
+                                                self.transform.transform.rotation.z,
+                                                self.transform.transform.rotation.w)
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
+            # Log a warning if the transform cannot be obtained
+            self.get_logger().warn("Could not get transform from map to odom: {}".format(ex))
+            return
 
-            #Route Tracking Block Start
+        if self.discovery:
+            if isinstance(pathGlobal, int) and pathGlobal == 0:
+                column = int((self.x - self.originX)/self.resolution)
+                row = int((self.y- self.originY)/self.resolution)
+                self.exploration(self.data,self.width,self.height,self.resolution,column,row,self.originX,self.originY)
+                self.path = pathGlobal
             else:
-                v , w = localControl(self.scan)
-                if v == None:
-                    v, w,self.i = pure_pursuit(self.x,self.y,self.yaw,self.path,self.i)
-                if(abs(self.x - self.path[-1][0]) < target_error and abs(self.y - self.path[-1][1]) < target_error):
-                    v = 0.0
-                    w = 0.0
-                    self.kesif = True
-                    print("[INFO] TARGET REACHED")
-                    self.t.join() #Wait until thread is finished.
-                twist.linear.x = v
-                twist.angular.z = w
-                self.publisher.publish(twist)
-                time.sleep(0.1)
-            #Route Follow Block End
+                self.path = pathGlobal
+            if isinstance(self.path, int) and self.path == -1:
+                print("[INFO] EXPLORATION COMPLETED")
+                sys.exit()
+            self.c = int((self.path[-1][0] - self.originX)/self.resolution) 
+            self.r = int((self.path[-1][1] - self.originY)/self.resolution) 
+            self.discovery = False
+            self.i = 0
+            print("[INFO] NEW TARGET SET")
+
+        #Route Tracking Block Start
+        else:
+            v , w = localControl(self.scan)
+            if v == None:
+                v, w,self.i = pure_pursuit(self.x,self.y,self.yaw,self.path,self.i)
+
+            if(abs(self.x - self.path[-1][0]) < target_error and abs(self.y - self.path[-1][1]) < target_error):
+                v = 0.0
+                w = 0.0
+                self.discovery = True
+                print("[INFO] TARGET REACHED")
+                pathGlobal = 0
+                self.scan_data = None
+                self.map_data = None
+
+            twist.linear.x = v
+            twist.angular.z = w
+            self.publisher.publish(twist)
+        #Route Follow Block End
 
     def target_callback(self):
         self.exploration(self.data,self.width,self.height,self.resolution,self.c,self.r,self.originX,self.originY)
@@ -445,7 +428,7 @@ class navigationControl(Node):
         data = costmap(data,width,height,resolution) #Engelleri genislet
         data[row][column] = 0 #Robot Instant Location
         data[data > 5] = 1 # 0 is a place to go, 100 is a definite obstacle
-        data,frontier_points = frontierB(data) #Find boundary points
+        data = frontierB(data) #Find boundary points
         data,groups = assign_groups(data) #Group boundary points
         groups = fGroups(groups) # Sort the groups from smallest to largest. Get the top 5 groups
         if len(groups) == 0: #Discovery complete if there is no group
@@ -470,35 +453,15 @@ class navigationControl(Node):
         path_marker.color.g = 1.0  # Green
         path_marker.color.b = 0.0  # Blue
 
-        # Add path points
-        for point in path:
-            pose = Pose()
-            pose.position.x = point[0]
-            pose.position.y = point[1]
-            path_marker.points.append(pose.position)
+        if len(groups) != 0:
+            # Add path points
+            for point in path:
+                pose = Pose()
+                pose.position.x = point[0]
+                pose.position.y = point[1]
+                path_marker.points.append(pose.position)
 
-        self.path_publisher.publish(path_marker)
-
-        # # Publish frontier marker
-        # frontier_marker = Marker()
-        # frontier_marker.header.frame_id = 'map'
-        # frontier_marker.type = Marker.POINTS
-        # frontier_marker.action = Marker.ADD
-        # frontier_marker.scale.x = 0.02  # Point size
-        # frontier_marker.scale.y = 0.02  # Point size
-        # frontier_marker.color.a = 1.0  # Alpha
-        # frontier_marker.color.r = 1.0  # Red
-        # frontier_marker.color.g = 0.0  # Green
-        # frontier_marker.color.b = 0.0  # Blue
-
-        # # Add frontier points
-        # for frontier_point in frontier_points:
-        #     pose = Pose()
-        #     pose.position.x = float(frontier_point[1]) * self.resolution + self.originX
-        #     pose.position.y = float(frontier_point[0]) * self.resolution + self.originY
-        #     frontier_marker.points.append(pose.position)
-
-        # self.frontier_publisher.publish(frontier_marker)
+            self.path_publisher.publish(path_marker)
 
         return
 
