@@ -162,7 +162,7 @@ def pure_pursuit(current_x, current_y, current_heading, path, index):
         desired_steering_angle += 2 * math.pi
     if desired_steering_angle > math.pi / 6 or desired_steering_angle < -math.pi / 6:
         sign = 1 if desired_steering_angle > 0 else -1
-        desired_steering_angle = sign * math.pi / 4
+        desired_steering_angle = (sign * math.pi / 4)
         v = 0.0
     return v, desired_steering_angle, index
 
@@ -332,6 +332,8 @@ class navigationControl(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        self.start_time = 0
+        self.target_count = 0
         self.create_timer(0.05, self.exp)
         
     def exp(self):
@@ -349,7 +351,7 @@ class navigationControl(Node):
 
         try:
             # Get the transform from "map" frame to "odom" frame
-            self.transform = self.tf_buffer.lookup_transform("odom", "base_link", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.5))
+            self.transform = self.tf_buffer.lookup_transform("vision", "base_link", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.5))
 
             # Extract the robot's position and orientation in the "map" frame
             self.x = self.transform.transform.translation.x
@@ -378,11 +380,22 @@ class navigationControl(Node):
             self.r = int((self.path[-1][1] - self.originY)/self.resolution) 
             self.discovery = False
             self.i = 0
+
+            if self.get_clock().now().to_msg().sec > self.start_time + 10:
+                self.start_time = self.get_clock().now().to_msg().sec
+                self.target_count = 0
+            self.target_count += 1
+            if self.target_count > 5:
+                print("[INFO] 5 new targets were created in 10 secs, stopping exploration")
+                sys.exit()
+
+            self.reset_time = self.get_clock().now().to_msg().sec + 10
             print("[INFO] NEW TARGET SET")
 
         #Route Tracking Block Start
         else:
-            v , w = localControl(self.scan)
+            # v , w = localControl(self.scan)
+            v = None
             if v == None:
                 v, w,self.i = pure_pursuit(self.x,self.y,self.yaw,self.path,self.i)
 
@@ -391,6 +404,15 @@ class navigationControl(Node):
                 w = 0.0
                 self.discovery = True
                 print("[INFO] TARGET REACHED")
+                pathGlobal = 0
+                self.scan_data = None
+                self.map_data = None
+
+            if(self.get_clock().now().to_msg().sec >= self.reset_time):
+                v = 0.0
+                w = 0.0
+                self.discovery = True
+                print("[INFO] TARGET RESETTED AFTER 10 SECS")
                 pathGlobal = 0
                 self.scan_data = None
                 self.map_data = None
@@ -425,7 +447,7 @@ class navigationControl(Node):
 
     def exploration(self, data,width,height,resolution,column,row,originX,originY):
         global pathGlobal
-        data = costmap(data,width,height,resolution) #Engelleri genislet
+        data = costmap(data,width,height,resolution) #Expand the obstacles
         data[row][column] = 0 #Robot Instant Location
         data[data > 5] = 1 # 0 is a place to go, 100 is a definite obstacle
         data = frontierB(data) #Find boundary points

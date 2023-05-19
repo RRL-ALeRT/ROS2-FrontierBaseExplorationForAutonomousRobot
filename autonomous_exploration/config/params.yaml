@@ -1,5 +1,5 @@
-lookahead_distance : 0.4 #one bakma mesafesi
-speed : 0.2 #maksimum hiz
-expansion_size : 3 #duvar genisletme katsayisi
-target_error : 0.15 #hedefe olan hata payi
-robot_r : 0.4 #lokal guvenlik icin robot mesafesi
+lookahead_distance: 0.4 # The distance to look ahead (in meters) for path planning.
+speed: 0.5 # The maximum speed of the robot (in meters per second).
+expansion_size: 6 # The factor by which obstacles are expanded during path planning.
+target_error: 0.4 # The acceptable error margin (in meters) for reaching the target location.
+robot_r: 0.4 # The safety distance around the robot (in meters) for local obstacle avoidance.
