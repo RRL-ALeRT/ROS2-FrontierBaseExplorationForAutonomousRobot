@@ -27,8 +27,6 @@ expansion_size = 4 # The factor by which obstacles are expanded during path plan
 target_error = 0.3 # The acceptable error margin (in meters) for reaching the target location.
 robot_r = 0.3 # The safety distance around the robot (in meters) for local obstacle avoidance.
 
-MAP_TRY_COUNT = 4
-
 pathGlobal = 0
 
 
@@ -347,8 +345,7 @@ class navigationControl(Node):
         self.start_time = 0
         self.target_count = 0
         self.create_timer(0.05, self.exp)
-        self.map_count = 0
-
+        
     def exp(self):
         global pathGlobal
 
@@ -394,13 +391,12 @@ class navigationControl(Node):
             self.discovery = False
             self.i = 0
 
-            # if self.get_clock().now().to_msg().sec > self.start_time + 30:
-            #     self.start_time = self.get_clock().now().to_msg().sec
-            #     self.target_count = 0
-
+            if self.get_clock().now().to_msg().sec > self.start_time + 30:
+                self.start_time = self.get_clock().now().to_msg().sec
+                self.target_count = 0
             self.target_count += 1
-            if self.target_count > 5 and self.map_count > MAP_TRY_COUNT:
-                print(f"[INFO] 5 new targets were created in {MAP_TRY_COUNT} map updates, stopping exploration")
+            if self.target_count > 5:
+                print("[INFO] 5 new targets were created in 30 secs, stopping exploration")
                 sys.exit()
 
             self.reset_time = self.get_clock().now().to_msg().sec + 30
@@ -408,9 +404,6 @@ class navigationControl(Node):
 
         #Route Tracking Block Start
         else:
-            # Reset this count, which checks if path search after the map was updated MAP_TRY_COUNT times.
-            self.map_count = 0
-
             # v , w = localControl(self.scan)
             v = None
             if v == None:
@@ -455,8 +448,6 @@ class navigationControl(Node):
         self.width = self.map_data.info.width
         self.height = self.map_data.info.height
         self.data = self.map_data.data
-
-        self.map_count += 1
 
     def odom_callback(self,msg):
         self.odom_data = msg
